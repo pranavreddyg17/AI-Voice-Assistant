@@ -1,0 +1,1 @@
+"""Insurance Voice Assistant Backend."""
