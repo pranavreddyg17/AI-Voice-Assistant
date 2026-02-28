@@ -3,6 +3,7 @@ import uuid
 import os
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.services.rag_service import ingest_document
@@ -30,7 +31,6 @@ async def upload_document(
     with open(file_path, "wb") as f:
         f.write(content)
     
-    from fastapi.concurrency import run_in_threadpool
 
     try:
         count = await run_in_threadpool(ingest_document, str(file_path), session_id)
