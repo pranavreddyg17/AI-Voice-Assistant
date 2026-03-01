@@ -2,28 +2,42 @@
 
 const API = '/api';
 
+async function handleResponse(r) {
+  if (!r.ok) {
+    let msg = 'Something went wrong. Please try again.'
+    try {
+      const body = await r.json()
+      msg = body.detail || body.message || msg
+    } catch {
+      try { msg = await r.text() } catch { }
+    }
+    throw new Error(msg)
+  }
+  return r.json()
+}
+
 export async function uploadDocument(file, sessionId = null) {
   const form = new FormData();
   form.append('file', file);
   if (sessionId) form.append('session_id', sessionId);
-  const r = await fetch(`${API}/upload/document`, {
-    method: 'POST',
-    body: form,
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const r = await fetch(`${API}/upload/document`, { method: 'POST', body: form });
+  return handleResponse(r);
 }
 
 export async function uploadVoice(file, sessionId = null) {
   const form = new FormData();
   form.append('file', file);
   if (sessionId) form.append('session_id', sessionId);
-  const r = await fetch(`${API}/voice/record`, {
-    method: 'POST',
-    body: form,
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const r = await fetch(`${API}/voice/record`, { method: 'POST', body: form });
+  return handleResponse(r);
+}
+
+export async function cloneVoice(file, sessionId = null) {
+  const form = new FormData();
+  form.append('file', file);
+  if (sessionId) form.append('session_id', sessionId);
+  const r = await fetch(`${API}/voice/clone`, { method: 'POST', body: form });
+  return handleResponse(r);
 }
 
 export async function getCaseSummary(sessionId, userProblem) {
@@ -32,8 +46,7 @@ export async function getCaseSummary(sessionId, userProblem) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, user_problem: userProblem }),
   });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  return handleResponse(r);
 }
 
 export async function generateScript(sessionId, userProblem, caseSummary) {
@@ -42,8 +55,7 @@ export async function generateScript(sessionId, userProblem, caseSummary) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, user_problem: userProblem, case_summary: caseSummary }),
   });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  return handleResponse(r);
 }
 
 export async function approveScript(sessionId, fullScript, edits = null) {
@@ -57,8 +69,7 @@ export async function approveScript(sessionId, fullScript, edits = null) {
       full_script: fullScript,
     }),
   });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  return handleResponse(r);
 }
 
 export async function startCall(sessionId, script, userProblem) {
@@ -67,8 +78,7 @@ export async function startCall(sessionId, script, userProblem) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, script, user_problem: userProblem }),
   });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  return handleResponse(r);
 }
 
 export async function getTTS(text, voiceId) {
@@ -77,8 +87,7 @@ export async function getTTS(text, voiceId) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, voice_id: voiceId }),
   });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  return handleResponse(r);
 }
 
 export function getCallWebSocketUrl(sessionId) {

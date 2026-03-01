@@ -1,6 +1,7 @@
 """Call initiation and TTS routes."""
 import base64
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.services.elevenlabs_service import text_to_speech
@@ -20,7 +21,7 @@ class StartCallRequest(BaseModel):
 async def start_call(req: StartCallRequest):
     """Register call context for WebSocket. Call this before connecting to WS."""
     try:
-        chunks = retrieve_relevant_chunks(req.user_problem, req.session_id)
+        chunks = await run_in_threadpool(retrieve_relevant_chunks, req.user_problem, req.session_id)
         rag_context = "\n\n".join(chunks)
         register_call(
             session_id=req.session_id,
@@ -43,7 +44,7 @@ class TTSRequest(BaseModel):
 async def get_tts_audio(req: TTSRequest):
     """Convert response text to speech with cloned voice. Returns base64 MP3."""
     try:
-        audio_bytes = text_to_speech(req.text, req.voice_id)
+        audio_bytes = await run_in_threadpool(text_to_speech, req.text, req.voice_id)
         return {
             "audio_base64": base64.b64encode(audio_bytes).decode(),
             "format": "mp3",

@@ -1,5 +1,6 @@
 """RAG and case summary routes."""
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.services.rag_service import retrieve_relevant_chunks
@@ -12,8 +13,6 @@ class CaseSummaryRequest(BaseModel):
     session_id: str
     user_problem: str
 
-
-from fastapi.concurrency import run_in_threadpool
 
 @router.post("/case-summary")
 async def get_case_summary(req: CaseSummaryRequest):

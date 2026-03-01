@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   uploadDocument,
   uploadVoice,
+  cloneVoice,
   getCaseSummary,
   generateScript,
   approveScript,
@@ -13,22 +14,22 @@ import './App.css'
 
 /* ── Step config ── */
 const STEPS = [
-  { id: 1, label: 'CAPTURE', icon: '🎙' },
-  { id: 2, label: 'INGEST', icon: '📄' },
-  { id: 3, label: 'SUMMARY', icon: '📋' },
-  { id: 4, label: 'SCRIPT', icon: '✨' },
-  { id: 5, label: 'DEPLOY', icon: '📞' },
+  { id: 1, label: 'UPLOAD', icon: '📄' },
+  { id: 2, label: 'DESCRIBE', icon: '💬' },
+  { id: 3, label: 'REVIEW', icon: '📋' },
+  { id: 4, label: 'APPROVE', icon: '✅' },
+  { id: 5, label: 'CALL', icon: '📞' },
 ]
 
 const STEP_META = {
-  1: { title: 'VOICE CAPTURE', sub: 'Record a voice sample describing your insurance problem' },
-  2: { title: 'DOCUMENT INGEST', sub: 'Upload your insurance policy for RAG context extraction' },
-  3: { title: 'CASE ANALYSIS', sub: 'AI-powered case summary from your voice and document' },
-  4: { title: 'SCRIPT REVIEW', sub: 'Review and approve the AI-generated negotiation script' },
-  5: { title: 'MISSION CONTROL', sub: 'Live outbound call simulation with real-time transcript' },
+  1: { title: 'Upload Your Policy', sub: 'Upload your insurance policy document so we can analyze it' },
+  2: { title: 'Describe Your Issue', sub: 'Record a voice message or type your insurance problem' },
+  3: { title: 'Review Your Case', sub: 'AI-generated case summary and negotiation script' },
+  4: { title: 'Approve the Script', sub: 'Review, edit, and approve the negotiation script' },
+  5: { title: 'Start the Call', sub: 'Live call simulation with the insurance company' },
 }
 
-/* ── Waveform component ── */
+/* ── Waveform ── */
 function Waveform({ isActive, barCount = 48, height = 48, variant = 'ambient' }) {
   const canvasRef = useRef(null)
   const animRef = useRef(0)
@@ -82,39 +83,42 @@ export default function App() {
   const [step, setStep] = useState(1)
   const [sessionId, setSessionId] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [loadingMsg, setLoadingMsg] = useState('')
   const [error, setError] = useState(null)
   const [currentTime, setCurrentTime] = useState('')
-
-  // Voice state
-  const [recording, setRecording] = useState(false)
-  const [recDuration, setRecDuration] = useState(0)
-  const [audioBlob, setAudioBlob] = useState(null)
-  const [transcript, setTranscript] = useState('')
-  const [voiceId, setVoiceId] = useState(null)
-  const recorderRef = useRef(null)
-  const timerRef = useRef(null)
 
   // Doc state
   const [docFile, setDocFile] = useState(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [chunksIngested, setChunksIngested] = useState(0)
   const fileInputRef = useRef(null)
 
-  // Summary state
-  const [caseSummary, setCaseSummary] = useState(null)
+  // Voice / describe state
+  const [recording, setRecording] = useState(false)
+  const [recDuration, setRecDuration] = useState(0)
+  const [audioBlob, setAudioBlob] = useState(null)
+  const [transcript, setTranscript] = useState('')
   const [typedProblem, setTypedProblem] = useState('')
+  const recorderRef = useRef(null)
+  const timerRef = useRef(null)
+
+  // Case analysis state
+  const [caseSummary, setCaseSummary] = useState(null)
+  const [ragChunks, setRagChunks] = useState([])
 
   // Script state
   const [fullScript, setFullScript] = useState('')
-  const [scriptLoading, setScriptLoading] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [scriptConfirmed, setScriptConfirmed] = useState(false)
 
   // Call state
-  const [callStatus, setCallStatus] = useState('ready') // ready | dialing | connected | ended
+  const [voiceId, setVoiceId] = useState(null)
+  const [callStatus, setCallStatus] = useState('ready')
   const [callTranscript, setCallTranscript] = useState([])
   const [callDuration, setCallDuration] = useState(0)
   const [agentInput, setAgentInput] = useState('')
   const [ws, setWs] = useState(null)
+  const [cloningVoice, setCloningVoice] = useState(false)
   const transcriptRef = useRef(null)
 
   // Clock
@@ -128,10 +132,10 @@ export default function App() {
     return () => clearInterval(iv)
   }, [])
 
-  // Auto-clear error
+  // Auto-clear error after 8s
   useEffect(() => {
     if (error) {
-      const t = setTimeout(() => setError(null), 6000)
+      const t = setTimeout(() => setError(null), 8000)
       return () => clearTimeout(t)
     }
   }, [error])
@@ -143,16 +147,57 @@ export default function App() {
     return () => clearInterval(iv)
   }, [callStatus])
 
-  // Auto scroll transcript
+  // Auto-scroll transcript
   useEffect(() => {
     if (transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
   }, [callTranscript])
 
+  // Start voice cloning in background when we have audio and session
+  useEffect(() => {
+    if (audioBlob && sessionId && !voiceId && !cloningVoice) {
+      setCloningVoice(true)
+      const file = new File([audioBlob], 'recording.webm', { type: 'audio/webm' })
+      cloneVoice(file, sessionId)
+        .then(res => { if (res.voice_id) setVoiceId(res.voice_id) })
+        .catch(() => { /* Voice cloning failed silently — call will use default voice */ })
+        .finally(() => setCloningVoice(false))
+    }
+  }, [audioBlob, sessionId, voiceId, cloningVoice])
+
   const fmtTime = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
   const fmtSize = b => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`
   const getNow = () => new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const userProblem = (transcript || typedProblem || '').trim()
 
-  /* ── Voice recording ── */
+  /* ── Step 1: Upload Document ── */
+  const handleDocUpload = async () => {
+    if (!docFile) return
+    setLoading(true)
+    setLoadingMsg('Analyzing your policy document...')
+    setError(null)
+    try {
+      const res = await uploadDocument(docFile, sessionId)
+      if (res.session_id) setSessionId(res.session_id)
+      setChunksIngested(res.chunks_ingested || 0)
+      setStep(2)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+      setLoadingMsg('')
+    }
+  }
+
+  const handleDocDrop = useCallback((e) => {
+    e.preventDefault()
+    setIsDragging(false)
+    const f = e.dataTransfer.files[0]
+    if (f && (f.name.endsWith('.pdf') || f.name.endsWith('.txt') || f.name.endsWith('.doc') || f.name.endsWith('.docx'))) {
+      setDocFile(f)
+    }
+  }, [])
+
+  /* ── Step 2: Voice recording ── */
   const startRecording = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -170,7 +215,7 @@ export default function App() {
       setRecDuration(0)
       timerRef.current = setInterval(() => setRecDuration(d => d + 1), 1000)
     } catch {
-      setError('Microphone access denied')
+      setError('Microphone access denied. You can type your problem instead.')
     }
   }, [])
 
@@ -185,86 +230,88 @@ export default function App() {
     setRecDuration(0)
     setTranscript('')
     setVoiceId(null)
+    setCloningVoice(false)
   }
 
-  /* ── Step 1→2: Process voice + upload ── */
-  const proceedToIngest = async () => {
-    if (!audioBlob) return
-    const file = new File([audioBlob], 'recording.webm', { type: 'audio/webm' })
+  /* ── Step 2→3: Process voice and generate case summary ── */
+  const handleDescribeNext = async () => {
     setLoading(true)
     setError(null)
+
     try {
-      const res = await uploadVoice(file, sessionId)
-      setTranscript(res.transcript || '')
-      setVoiceId(res.voice_id || null)
-      if (res.session_id) setSessionId(res.session_id)
-      setStep(2)
+      // If we have audio, transcribe it first
+      if (audioBlob && !transcript) {
+        setLoadingMsg('Transcribing your recording...')
+        const file = new File([audioBlob], 'recording.webm', { type: 'audio/webm' })
+        const voiceRes = await uploadVoice(file, sessionId)
+        if (voiceRes.session_id) setSessionId(voiceRes.session_id)
+        const t = voiceRes.transcript || ''
+        setTranscript(t)
+
+        // Now generate case summary with the transcript
+        const problem = (t || typedProblem || '').trim()
+        if (!problem) {
+          setError('Please describe your problem — either record a voice message or type it below.')
+          setLoading(false)
+          setLoadingMsg('')
+          return
+        }
+        setLoadingMsg('Analyzing your case...')
+        const sumRes = await getCaseSummary(voiceRes.session_id || sessionId, problem)
+        setCaseSummary(sumRes.case_summary)
+        setRagChunks(sumRes.rag_chunks || [])
+
+        setLoadingMsg('Generating negotiation script...')
+        const scriptRes = await generateScript(voiceRes.session_id || sessionId, problem, sumRes.case_summary)
+        setFullScript(scriptRes.script?.full_script || JSON.stringify(scriptRes.script, null, 2))
+        setStep(3)
+      } else {
+        // Text-only path
+        const problem = typedProblem.trim()
+        if (!problem) {
+          setError('Please describe your problem — either record a voice message or type it below.')
+          setLoading(false)
+          setLoadingMsg('')
+          return
+        }
+        setLoadingMsg('Analyzing your case...')
+        const sumRes = await getCaseSummary(sessionId, problem)
+        setCaseSummary(sumRes.case_summary)
+        setRagChunks(sumRes.rag_chunks || [])
+
+        setLoadingMsg('Generating negotiation script...')
+        const scriptRes = await generateScript(sessionId, problem, sumRes.case_summary)
+        setFullScript(scriptRes.script?.full_script || JSON.stringify(scriptRes.script, null, 2))
+        setStep(3)
+      }
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
+      setLoadingMsg('')
     }
   }
 
-  /* ── Step 2→3: Upload doc ── */
-  const handleDocUpload = async () => {
-    if (!docFile) return
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await uploadDocument(docFile, sessionId)
-      if (res.session_id) setSessionId(res.session_id)
-      setStep(3)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleDocDrop = useCallback((e) => {
-    e.preventDefault()
-    setIsDragging(false)
-    const f = e.dataTransfer.files[0]
-    if (f && (f.name.endsWith('.pdf') || f.name.endsWith('.txt') || f.name.endsWith('.doc') || f.name.endsWith('.docx'))) {
-      setDocFile(f)
-    }
-  }, [])
-
-  /* ── Step 3→4: Generate case summary + script ── */
-  const handleCaseSummary = async () => {
-    const problem = (transcript || typedProblem || '').trim()
-    if (!problem) return
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await getCaseSummary(sessionId, problem)
-      setCaseSummary(res.case_summary)
-      // Auto-generate script
-      setScriptLoading(true)
-      const scriptRes = await generateScript(sessionId, problem, res.case_summary)
-      setFullScript(scriptRes.script?.full_script || JSON.stringify(scriptRes.script, null, 2))
-      setStep(4)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-      setScriptLoading(false)
-    }
-  }
+  /* ── Step 3→4: Move to approval ── */
+  const handleProceedToApproval = () => setStep(4)
 
   /* ── Step 4→5: Approve script ── */
   const handleApproveScript = async () => {
     setLoading(true)
+    setLoadingMsg('Saving your approved script...')
     setError(null)
     try {
       await approveScript(sessionId, fullScript)
       setScriptConfirmed(true)
-      setTimeout(() => setStep(5), 800)
+      setTimeout(() => {
+        setStep(5)
+        setLoading(false)
+        setLoadingMsg('')
+      }, 600)
     } catch (err) {
       setError(err.message)
-    } finally {
       setLoading(false)
+      setLoadingMsg('')
     }
   }
 
@@ -275,12 +322,10 @@ export default function App() {
     setCallDuration(0)
     setError(null)
     try {
-      await startCall(sessionId, fullScript, transcript || typedProblem)
+      await startCall(sessionId, fullScript, userProblem)
       const url = getCallWebSocketUrl(sessionId)
       const socket = new WebSocket(url)
-      socket.onopen = () => {
-        setCallStatus('connected')
-      }
+      socket.onopen = () => setCallStatus('connected')
       socket.onmessage = (e) => {
         const msg = JSON.parse(e.data)
         if (msg.type === 'response') {
@@ -294,7 +339,10 @@ export default function App() {
           }
         }
       }
-      socket.onerror = () => setError('WebSocket connection error')
+      socket.onerror = () => {
+        setError('Connection lost. Please try again.')
+        setCallStatus('ready')
+      }
       setWs(socket)
     } catch (err) {
       setError(err.message)
@@ -312,7 +360,7 @@ export default function App() {
 
   const handleEndCall = () => {
     if (ws) {
-      ws.send(JSON.stringify({ type: 'end_call' }))
+      try { ws.send(JSON.stringify({ type: 'end_call' })) } catch { }
       ws.close()
     }
     setWs(null)
@@ -328,15 +376,15 @@ export default function App() {
       <div className="bg-glow" />
 
       {/* Error toast */}
-      {error && <div className="error-toast" onClick={() => setError(null)}>{error}</div>}
+      {error && <div className="error-toast" onClick={() => setError(null)}>⚠ {error}</div>}
 
       {/* Header */}
       <header className="header">
         <div className="header-brand">
           <div className="brand-icon">📡</div>
           <div className="brand-text">
-            <div className="brand-name">VOXAI</div>
-            <div className="brand-sub">VOICE AGENT COMMAND CENTER</div>
+            <div className="brand-name">Insurance Voice Assistant</div>
+            <div className="brand-sub">AI-POWERED POLICY NEGOTIATION</div>
           </div>
         </div>
 
@@ -358,7 +406,7 @@ export default function App() {
         </div>
 
         <div className="header-status">
-          <span><span className="status-dot" />SYSTEM ONLINE</span>
+          <span><span className="status-dot" />ONLINE</span>
           <span>{currentTime}</span>
         </div>
       </header>
@@ -367,7 +415,7 @@ export default function App() {
       <main className="main-content">
         <div className="step-title">
           <div className="step-counter">
-            STEP {String(step).padStart(2, '0')} <span className="dim">/ 05</span>
+            Step {step} <span className="dim">of 5</span>
           </div>
           <h1 className="step-heading">{meta.title}</h1>
           <p className="step-subtitle">{meta.sub}</p>
@@ -379,51 +427,8 @@ export default function App() {
           <div className="corner corner-bl" />
           <div className="corner corner-br" />
 
-          {/* ── Step 1: Voice Capture ── */}
+          {/* ── Step 1: Upload Document ── */}
           {step === 1 && (
-            <div className="recorder">
-              <div className="recorder-orb-wrap">
-                <div className={`recorder-orb-bg ${recording ? 'recording' : audioBlob ? 'has-recording' : ''}`} />
-                {recording && (
-                  <>
-                    <div className="pulse-ring-1" />
-                    <div className="pulse-ring-2" />
-                  </>
-                )}
-                <button
-                  className={`recorder-btn ${recording ? 'recording' : audioBlob ? 'has-recording' : ''}`}
-                  onClick={recording ? stopRecording : audioBlob ? null : startRecording}
-                  disabled={audioBlob && !recording}
-                >
-                  {recording ? '⏹' : audioBlob ? '✓' : '🎙'}
-                </button>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
-                <span className="recorder-timer">{fmtTime(recDuration)}</span>
-                {recording && recDuration < 30 && <span className="recorder-hint">MIN 0:30 REQUIRED</span>}
-                {recording && recDuration >= 30 && <span className="recorder-hint ready">READY TO CAPTURE</span>}
-                {audioBlob && !recording && <span className="recorder-hint ready">VOICE SAMPLE CAPTURED</span>}
-              </div>
-
-              <Waveform isActive={recording} variant="recording" barCount={64} height={48} />
-
-              <div className="recorder-actions">
-                {!recording && !audioBlob && <p className="recorder-hint">TAP TO BEGIN VOICE CAPTURE</p>}
-                {recording && (
-                  <button className="btn btn-outline" onClick={stopRecording} disabled={recDuration < 5}>
-                    ⏹ STOP RECORDING
-                  </button>
-                )}
-                {audioBlob && !recording && (
-                  <button className="btn btn-ghost" onClick={resetRecording}>↺ RE-RECORD</button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ── Step 2: Document Ingest ── */}
-          {step === 2 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               <div
                 className={`upload-zone ${isDragging ? 'dragging' : ''} ${docFile ? 'has-file' : ''}`}
@@ -444,70 +449,158 @@ export default function App() {
                     <div className="upload-icon active">✓</div>
                     <span className="upload-file-name">{docFile.name}</span>
                     <span className="upload-file-size">{fmtSize(docFile.size)}</span>
-                    <button className="upload-remove" onClick={e => { e.stopPropagation(); setDocFile(null); if (fileInputRef.current) fileInputRef.current.value = '' }}>
-                      ✕ REMOVE
+                    <button className="upload-remove" onClick={e => {
+                      e.stopPropagation()
+                      setDocFile(null)
+                      if (fileInputRef.current) fileInputRef.current.value = ''
+                    }}>
+                      ✕ Remove
                     </button>
                   </div>
                 ) : (
                   <div className="upload-file-info">
                     <div className={`upload-icon ${isDragging ? 'active' : ''}`}>{isDragging ? '⬆' : '📄'}</div>
-                    <span className="upload-text">DROP DOCUMENT HERE</span>
+                    <span className="upload-text">Drop your policy document here</span>
                     <span className="upload-hint">PDF, TXT, DOC — Up to 10MB</span>
                   </div>
                 )}
               </div>
               <div className="privacy-note">
-                <span>🛡</span>
-                <p>Your document is chunked locally, embedded with Mistral, and stored in an in-memory Qdrant instance. Nothing leaves the session.</p>
+                <span>🔒</span>
+                <p>Your document is processed securely. It's chunked, embedded, and stored in memory for this session only.</p>
               </div>
             </div>
           )}
 
-          {/* ── Step 3: Case Analysis ── */}
+          {/* ── Step 2: Describe Issue ── */}
+          {step === 2 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+              {chunksIngested > 0 && (
+                <div className="privacy-note" style={{ borderColor: 'var(--border-active)', background: 'var(--primary-dim)' }}>
+                  <span>✓</span>
+                  <p style={{ color: 'var(--primary)' }}>Policy document analyzed — {chunksIngested} sections indexed</p>
+                </div>
+              )}
+
+              {/* Voice recorder */}
+              <div className="recorder">
+                <div className="recorder-orb-wrap">
+                  <div className={`recorder-orb-bg ${recording ? 'recording' : audioBlob ? 'has-recording' : ''}`} />
+                  {recording && (
+                    <>
+                      <div className="pulse-ring-1" />
+                      <div className="pulse-ring-2" />
+                    </>
+                  )}
+                  <button
+                    className={`recorder-btn ${recording ? 'recording' : audioBlob ? 'has-recording' : ''}`}
+                    onClick={recording ? stopRecording : audioBlob ? null : startRecording}
+                    disabled={audioBlob && !recording}
+                  >
+                    {recording ? '⏹' : audioBlob ? '✓' : '🎙'}
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                  <span className="recorder-timer">{fmtTime(recDuration)}</span>
+                  {recording && recDuration < 10 && <span className="recorder-hint">Keep talking...</span>}
+                  {recording && recDuration >= 10 && <span className="recorder-hint ready">Recording captured — tap stop when done</span>}
+                  {audioBlob && !recording && <span className="recorder-hint ready">Voice recording saved</span>}
+                  {!recording && !audioBlob && <span className="recorder-hint">Tap to record your voice describing the problem</span>}
+                </div>
+
+                <Waveform isActive={recording} variant="recording" barCount={64} height={40} />
+
+                <div className="recorder-actions">
+                  {recording && (
+                    <button className="btn btn-outline" onClick={stopRecording} disabled={recDuration < 3}>
+                      ⏹ Stop Recording
+                    </button>
+                  )}
+                  {audioBlob && !recording && (
+                    <button className="btn btn-ghost" onClick={resetRecording}>↺ Re-record</button>
+                  )}
+                </div>
+              </div>
+
+              {/* Divider */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+                <span style={{ fontSize: '0.7rem', color: 'var(--fg-muted)', letterSpacing: '0.1em' }}>
+                  {audioBlob ? 'OR ALSO TYPE BELOW' : 'OR TYPE YOUR PROBLEM'}
+                </span>
+                <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+              </div>
+
+              {/* Text input fallback */}
+              <textarea
+                className="script-textarea"
+                style={{ minHeight: '80px' }}
+                value={typedProblem}
+                onChange={e => setTypedProblem(e.target.value)}
+                placeholder="e.g. My health insurance claim for a hospital stay was denied. Policy number is ABC-123. The denial letter says the procedure wasn't covered, but I believe it should be under my plan."
+              />
+            </div>
+          )}
+
+          {/* ── Step 3: Case Review ── */}
           {step === 3 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-              {transcript && (
-                <div className="privacy-note">
-                  <span>💬</span>
-                  <p><strong>Your problem (transcribed):</strong> {transcript}</p>
-                </div>
-              )}
-              {!transcript && (
-                <div>
-                  <label style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', letterSpacing: '0.1em', marginBottom: '0.5rem', display: 'block' }}>
-                    DESCRIBE YOUR PROBLEM
-                  </label>
-                  <input
-                    className="agent-input"
-                    style={{ width: '100%' }}
-                    value={typedProblem}
-                    onChange={e => setTypedProblem(e.target.value)}
-                    placeholder="e.g. They denied my claim for hospital stay, policy 12345"
-                  />
-                </div>
-              )}
+              {/* Case summary */}
               {caseSummary && (
-                <div className="script-display" style={{ minHeight: '150px', maxHeight: '200px' }}>
-                  {JSON.stringify(caseSummary, null, 2)}
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <div className="script-icon">📋</div>
+                    <div className="script-meta">
+                      <h3>Case Summary</h3>
+                      <p>Based on your policy and described problem</p>
+                    </div>
+                  </div>
+                  <div className="script-display" style={{ minHeight: '120px', maxHeight: '180px' }}>
+                    {typeof caseSummary === 'string' ? caseSummary : JSON.stringify(caseSummary, null, 2)}
+                  </div>
+                </>
+              )}
+
+              {/* Script preview */}
+              {fullScript && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                    <div className="script-icon">✨</div>
+                    <div className="script-meta">
+                      <h3>Negotiation Script</h3>
+                      <p>AI-generated script ready for your review</p>
+                    </div>
+                  </div>
+                  <div className="script-display" style={{ minHeight: '150px', maxHeight: '250px' }}>
+                    {fullScript}
+                  </div>
+                </>
+              )}
+
+              {ragChunks.length > 0 && (
+                <div className="privacy-note">
+                  <span>📑</span>
+                  <p>{ragChunks.length} relevant policy sections were used to generate this analysis</p>
                 </div>
               )}
             </div>
           )}
 
-          {/* ── Step 4: Script Review ── */}
+          {/* ── Step 4: Script Approval ── */}
           {step === 4 && (
             <div className="script-editor">
               <div className="script-header">
                 <div className="script-header-left">
-                  <div className="script-icon">✨</div>
+                  <div className="script-icon">✅</div>
                   <div className="script-meta">
-                    <h3>GENERATED SCRIPT</h3>
-                    <p>{scriptLoading ? 'GENERATING VIA MISTRAL...' : 'GENERATION COMPLETE'}</p>
+                    <h3>Review & Edit Script</h3>
+                    <p>{scriptConfirmed ? 'Script approved!' : 'Make any changes, then approve'}</p>
                   </div>
                 </div>
                 {!scriptConfirmed && (
                   <button className="btn btn-ghost" onClick={() => setIsEditing(!isEditing)}>
-                    {isEditing ? '👁 PREVIEW' : '✏ EDIT'}
+                    {isEditing ? '👁 Preview' : '✏ Edit'}
                   </button>
                 )}
               </div>
@@ -519,20 +612,18 @@ export default function App() {
                   onChange={e => setFullScript(e.target.value)}
                 />
               ) : (
-                <div className={`script-display ${scriptLoading ? 'streaming' : ''}`}>
-                  {scriptLoading && <div className="live-badge"><div className="live-dot" /> LIVE</div>}
+                <div className="script-display">
                   {fullScript}
-                  {scriptLoading && <span className="cursor-blink" />}
                 </div>
               )}
 
               {scriptConfirmed && (
-                <div className="script-confirmed">✓ SCRIPT LOCKED IN</div>
+                <div className="script-confirmed">✓ Script approved and locked in</div>
               )}
             </div>
           )}
 
-          {/* ── Step 5: Mission Control ── */}
+          {/* ── Step 5: Call ── */}
           {step === 5 && (
             <div className="call-control">
               <div className="call-header">
@@ -541,29 +632,31 @@ export default function App() {
                     {callStatus === 'dialing' ? <span className="spinner" /> : '📞'}
                   </div>
                   <div>
-                    <p style={{ fontSize: '0.85rem' }}>Insurance Company</p>
+                    <p style={{ fontSize: '0.85rem' }}>Insurance Company Call</p>
                     <span className={`call-status-text ${callStatus === 'connected' ? 'live' : ''}`}>
-                      {callStatus === 'ready' && 'READY TO DEPLOY'}
-                      {callStatus === 'dialing' && 'ESTABLISHING CONNECTION...'}
-                      {callStatus === 'connected' && `🟢 LIVE  |  ⏱ ${fmtTime(callDuration)}`}
-                      {callStatus === 'ended' && 'CALL TERMINATED'}
+                      {callStatus === 'ready' && 'Ready to begin'}
+                      {callStatus === 'dialing' && 'Connecting...'}
+                      {callStatus === 'connected' && `🟢 Live  ·  ${fmtTime(callDuration)}`}
+                      {callStatus === 'ended' && 'Call ended'}
                     </span>
+                    {cloningVoice && <span className="call-status-text" style={{ fontSize: '0.6rem' }}>Preparing your AI voice...</span>}
+                    {voiceId && !cloningVoice && <span className="call-status-text" style={{ fontSize: '0.6rem', color: 'var(--primary)' }}>✓ Voice clone ready</span>}
                   </div>
                 </div>
                 {callStatus === 'connected' && (
-                  <button className="btn btn-danger" onClick={handleEndCall}>📵 END CALL</button>
+                  <button className="btn btn-danger" onClick={handleEndCall}>End Call</button>
                 )}
               </div>
 
               {(callStatus === 'connected' || callStatus === 'dialing') && (
-                <Waveform isActive={callStatus === 'connected'} variant={callStatus === 'connected' ? 'playback' : 'ambient'} barCount={96} height={32} />
+                <Waveform isActive={callStatus === 'connected'} variant="playback" barCount={96} height={32} />
               )}
 
               <div ref={transcriptRef} className={`call-transcript-wrap ${callStatus === 'connected' ? 'active' : ''}`}>
                 {callTranscript.length === 0 && callStatus !== 'connected' && callStatus !== 'dialing' && (
                   <div className="transcript-empty">
                     <span style={{ fontSize: '2rem', opacity: 0.3 }}>📞</span>
-                    <span>{callStatus === 'ready' ? 'TRANSCRIPT WILL APPEAR HERE' : 'CALL COMPLETE'}</span>
+                    <span>{callStatus === 'ready' ? 'Call transcript will appear here' : 'Call complete'}</span>
                   </div>
                 )}
                 {callStatus === 'dialing' && callTranscript.length === 0 && (
@@ -573,7 +666,7 @@ export default function App() {
                       <div className="dialing-dot" />
                       <div className="dialing-dot" />
                     </div>
-                    <span>RINGING...</span>
+                    <span>Ringing...</span>
                   </div>
                 )}
                 {callTranscript.map((entry, i) => (
@@ -584,7 +677,7 @@ export default function App() {
                     <div className="transcript-content">
                       <div>
                         <span className={`transcript-role ${entry.role}`}>
-                          {entry.role === 'ai' ? 'YOU (AI)' : 'AGENT'}
+                          {entry.role === 'ai' ? 'You (AI)' : 'Insurance Agent'}
                         </span>
                         <span className="transcript-ts">{entry.ts}</span>
                         {entry.latency && <span className="transcript-ts">({entry.latency.toFixed(0)}ms)</span>}
@@ -604,45 +697,50 @@ export default function App() {
                     onKeyDown={e => e.key === 'Enter' && sendAgentMessage()}
                     placeholder="Type what the insurance agent says..."
                   />
-                  <button className="btn btn-primary" onClick={sendAgentMessage}>SEND</button>
+                  <button className="btn btn-primary" onClick={sendAgentMessage}>Send</button>
                 </div>
               )}
 
               {callStatus === 'ended' && (
                 <div className="call-ended-summary">
-                  <div><div className="stat-label">CALL DURATION</div><div className="stat-value">{fmtTime(callDuration)}</div></div>
-                  <div style={{ textAlign: 'right' }}><div className="stat-label">MESSAGES</div><div className="stat-value">{callTranscript.length}</div></div>
+                  <div><div className="stat-label">Duration</div><div className="stat-value">{fmtTime(callDuration)}</div></div>
+                  <div style={{ textAlign: 'right' }}><div className="stat-label">Messages</div><div className="stat-value">{callTranscript.length}</div></div>
                 </div>
               )}
             </div>
           )}
         </div>
 
-        {/* Navigation buttons */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', marginTop: '1.5rem' }}>
-          {step === 1 && audioBlob && !recording && (
-            <button className="btn btn-primary" onClick={proceedToIngest} disabled={loading}>
-              {loading ? <><span className="spinner" /> PROCESSING...</> : <>PROCEED TO INGEST →</>}
-            </button>
+        {/* Navigation */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', marginTop: '1.5rem' }}>
+          {/* Loading message */}
+          {loading && loadingMsg && (
+            <p style={{ fontSize: '0.75rem', color: 'var(--fg-muted)', letterSpacing: '0.05em' }}>{loadingMsg}</p>
           )}
-          {step === 2 && docFile && (
+
+          {step === 1 && docFile && (
             <button className="btn btn-primary" onClick={handleDocUpload} disabled={loading}>
-              {loading ? <><span className="spinner" /> INGESTING...</> : <>GENERATE ANALYSIS →</>}
+              {loading ? <><span className="spinner" /> Analyzing document...</> : <>Upload & Continue →</>}
             </button>
           )}
-          {step === 3 && !caseSummary && (
-            <button className="btn btn-primary" onClick={handleCaseSummary} disabled={loading || !(transcript || typedProblem)}>
-              {loading ? <><span className="spinner" /> ANALYZING...</> : <>ANALYZE CASE →</>}
+          {step === 2 && (
+            <button className="btn btn-primary" onClick={handleDescribeNext} disabled={loading || (!audioBlob && !typedProblem.trim())}>
+              {loading ? <><span className="spinner" /> {loadingMsg || 'Processing...'}</> : <>Analyze & Generate Script →</>}
+            </button>
+          )}
+          {step === 3 && (
+            <button className="btn btn-primary" onClick={handleProceedToApproval} disabled={loading}>
+              Review & Approve Script →
             </button>
           )}
           {step === 4 && !scriptConfirmed && (
             <button className="btn btn-primary btn-full" onClick={handleApproveScript} disabled={loading}>
-              {loading ? <><span className="spinner" /> APPROVING...</> : <>✓ CONFIRM SCRIPT</>}
+              {loading ? <><span className="spinner" /> Saving...</> : <>✓ Approve Script</>}
             </button>
           )}
           {step === 5 && callStatus === 'ready' && (
-            <button className="btn btn-primary btn-full" onClick={handleStartCall} disabled={loading}>
-              {loading ? <><span className="spinner" /> CONNECTING...</> : <>📞 INITIATE OUTBOUND CALL</>}
+            <button className="btn btn-primary btn-full" onClick={handleStartCall}>
+              📞 Start Call Simulation
             </button>
           )}
         </div>
@@ -655,11 +753,9 @@ export default function App() {
         </div>
         <div className="footer-bar">
           <div className="footer-tech">
-            <span>⚡ POWERED BY ELEVENLABS + MISTRAL</span>
+            <span>⚡ Powered by ElevenLabs + Mistral AI</span>
             <span>|</span>
-            <span>QDRANT RAG</span>
-            <span>|</span>
-            <span>WEBSOCKET LIVE</span>
+            <span>Qdrant RAG</span>
           </div>
           <span className="footer-version">v1.0.0</span>
         </div>

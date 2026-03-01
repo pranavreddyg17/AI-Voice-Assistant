@@ -1,5 +1,6 @@
 """Script generation and approval routes."""
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import Optional
 
@@ -24,8 +25,6 @@ class ScriptApprovalRequest(BaseModel):
     full_script: str = ""
 
 
-from fastapi.concurrency import run_in_threadpool
-
 @router.post("/generate")
 async def generate_script(req: ScriptRequest):
     """Generate negotiation script from case summary."""
@@ -42,7 +41,6 @@ async def approve_script(req: ScriptApprovalRequest):
     if not req.approved:
         return {"approved": False, "message": "Script not approved"}
     
-    # In a real app we'd fetch the current script for this session and apply edits
     script_text = req.edits if req.edits else req.full_script
     _approved_scripts[req.session_id] = {
         "approved": True,
